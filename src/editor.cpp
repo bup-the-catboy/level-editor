@@ -108,22 +108,73 @@ struct Layer {
     std::string name;
     std::map<uint64_t, int> tilemap;
     std::vector<struct Entity*> entities;
+    int tileset;
 };
 
-struct ThemeData {
+struct TilesetData {
+    int palette;
     const char* texture_path;
     int width, height;
     int tiles_in_row;
 };
 
 #define NO_VSCODE
+
+#define TILE_PALETTE(_1, _2) ,TILE_PALETTE_##_1
+#define ENUM(value) = x
+enum TilePaletteIDs {
+    __TILE_PALETTE = -1
+#include "../../src/game/data/tiles.h"
+};
+
+#undef ENUM
+#define TILESET_TYPE(t) int t;
+#define ENUM(value)
+
+struct ThemeDataFields {
+#include "../../src/game/data/tileset_types.h"
+};
+
+union ThemeData {
+    struct ThemeDataFields data;
+    int arr[sizeof(struct ThemeDataFields) / sizeof(int)];
+};
+
 #define TILESET(_1, _2) { _2 },
 #define SIZE(w, h) .width = w, .height = h,
 #define TILES_IN_ROW(x) .tiles_in_row = x,
 #define TEXTURE(x) .texture_path = x,
+#define PALETTE(x) .palette = TILE_PALETTE_##x,
 
-struct ThemeData theme_data[] = {
+struct TilesetData tileset_data[] = {
 #include "../../src/game/data/tilesets.h"
+};
+
+#undef TILESET
+#undef ENUM
+#define TILESET(_1, _2) ,TILESET_##_1
+#define ENUM(value) = value
+
+enum TilesetNames {
+    __TILESET = -1
+#include "../../src/game/data/tilesets.h"
+};
+
+#define THEME(_1, _2) ,THEME_##_1
+
+enum ThemeNames {
+    __THEME = -1
+#include "../../src/game/data/themes.h"
+};
+
+#undef ENUM
+#undef THEME
+#define THEME(_1, _2) { .data = { _2 } },
+#define THEME_TILESET(_1, _2) ._1 = TILESET_##_2,
+#define ENUM(value)
+
+union ThemeData theme_data[] = {
+#include "../../src/game/data/themes.h"
 };
 
 #undef TEXTURE
@@ -143,7 +194,10 @@ struct EntityMeta entity_data[] = {
 #include "../../src/game/data/entities.h"
 };
 
-#define TILE(id, _1) ,     TILE_##id
+#undef ENUM
+#undef TILE_PALETTE
+#define TILE_PALETTE(id, data) , __TILE_##id = -1 data
+#define TILE(id, _1)           ,   TILE_##id
 #define ENUM(value) = value
 enum TileIDs {
     __TILE = -1
@@ -153,22 +207,47 @@ enum TileIDs {
 #undef TEXTURE
 #undef TILE
 #undef LVLEDIT_HIDE
-#define TILE(id, data) curr = TILE_##id; data
+#undef TILE_PALETTE
+#define TILE_PALETTE(id, data) curr_palette = TILE_PALETTE_##id; data
+#define TILE(id, data) curr_tile = TILE_##id; data
 #define TEXTURE(_1)
 #define SOLID()
 #define SIMPLE_STATIONARY_TEXTURE(_1) SIMPLE_ANIMATED_TEXTURE(1, 1, _1)
 #define LVLEDIT_HIDE()
-#define SIMPLE_ANIMATED_TEXTURE(frames, delay, ...) tile_frame_data[curr] = { true, delay, { __VA_ARGS__ } };
-struct {
+#define SIMPLE_ANIMATED_TEXTURE(frames, delay, ...) tile_frame_data[curr_palette][curr_tile] = { true, delay, { __VA_ARGS__ } };
+struct { 
     bool textured;
     int delay;
     std::vector<int> frames;
-} tile_frame_data[256];
+} tile_frame_data[256][256];
 
 void init_tile_frame_data() {
-    int curr = 0;
+    int curr_palette = 0;
+    int curr_tile = 0;
 #include "../../src/game/data/tiles.h"
 }
+
+#define curr_tileset tileset_data[theme_data[curr_theme].arr[curr_layer->tileset]]
+#define tile_texture_data tile_frame_data[curr_tileset.palette]
+
+#undef THEME
+#define THEME(_1, _2) #_1 "\0"
+
+    const char* str_music =
+        "grass" "\0"
+    ;
+    const char* str_theme =
+#include "../../src/game/data/themes.h"
+    ;
+
+#undef THEME
+#undef THEME_TILESET
+#define THEME(_1, _2) const char* strs_theme[256] = { [THEME_##_1] = _2 "\0" };
+#define THEME_TILESET(_1, _2) #_1 " (" #_2 ")",
+
+#include "../../src/game/data/themes.h"
+
+#define str_tileset strs_theme[curr_theme]
 
 extern SDL_Renderer* renderer;
 extern SDL_Window* window;
@@ -243,12 +322,12 @@ int get_tile(int x, int y) {
 } 
 
 void draw_grid(SDL_Renderer* renderer, float scalex, float scaley, float speedx, float speedy, float offsetx, float offsety) {
-    float grid_width  = theme_data[curr_theme].width  * 2.f;
-    float grid_height = theme_data[curr_theme].height * 2.f;
-    float camX = camx / scalex * speedx + offsetx;
-    float camY = camy / scaley * speedy + offsety;
-    int width = windoww / scalex / grid_width + 2;
-    int height = windowh / scaley / grid_height + 2;
+    float grid_width  = curr_tileset.width  * 2.f;
+    float grid_height = curr_tileset.height * 2.f;
+    float camX = (camx / grid_width  * 32) / scalex * speedx + offsetx;
+    float camY = (camy / grid_height * 32) / scaley * speedy + offsety;
+    int width = windoww / scalex / grid_width + 4;
+    int height = windowh / scaley / grid_height + 4;
     int fromX = camX - width / 2.f;
     int fromY = camY - height / 2.f;
     int toX = camX + width / 2.f;
@@ -267,10 +346,12 @@ void draw_grid(SDL_Renderer* renderer, float scalex, float scaley, float speedx,
 }
 
 void draw_tilemap(struct Layer* layer) {
-    float grid_width  = theme_data[curr_theme].width  * 2.f;
-    float grid_height = theme_data[curr_theme].height * 2.f;
-    float camX = (camx * layer->smx - windoww / 64.f) / layer->scx + layer->sox;
-    float camY = (camy * layer->smy - windowh / 64.f) / layer->scy + layer->soy;
+    struct Layer* prev_curr_layer = curr_layer;
+    curr_layer = layer;
+    float grid_width  = curr_tileset.width  * 2.f;
+    float grid_height = curr_tileset.height * 2.f;
+    float camX = ((camx * layer->smx - windoww / 64.f) / grid_width  * 32) / layer->scx + layer->sox;
+    float camY = ((camy * layer->smy - windowh / 64.f) / grid_height * 32) / layer->scy + layer->soy;
     int fromX = camX - 1;
     int fromY = camY - 1;
     int toX = camX + windoww / layer->scx / grid_width + 1;
@@ -278,14 +359,14 @@ void draw_tilemap(struct Layer* layer) {
     for (int y = fromY; y <= toY; y++) {
         for (int x = fromX; x <= toX; x++) {
             int tile = get_tile_from_layer(layer, x, y);
-            if (!tile_frame_data[tile].textured) continue;
-            int anim = tile_frame_data[tile].frames[(frames_drawn / tile_frame_data[tile].delay) % tile_frame_data[tile].frames.size()];
-            SDL_Texture* tex = get_texture(theme_data[curr_theme].texture_path);
+            if (!tile_texture_data[tile].textured) continue;
+            int anim = tile_texture_data[tile].frames[(frames_drawn / tile_texture_data[tile].delay) % tile_texture_data[tile].frames.size()];
+            SDL_Texture* tex = get_texture(curr_tileset.texture_path);
             SDL_Rect src = (SDL_Rect){
-                .x = (anim % theme_data[curr_theme].tiles_in_row) * theme_data[curr_theme].width,
-                .y = (anim / theme_data[curr_theme].tiles_in_row) * theme_data[curr_theme].height,
-                .w = theme_data[curr_theme].width,
-                .h = theme_data[curr_theme].height
+                .x = (anim % curr_tileset.tiles_in_row) * curr_tileset.width,
+                .y = (anim / curr_tileset.tiles_in_row) * curr_tileset.height,
+                .w = curr_tileset.width,
+                .h = curr_tileset.height
             };
             SDL_Rect dst = (SDL_Rect){
                 .x = (int)((x - camX) * grid_width  * layer->scx),
@@ -300,14 +381,17 @@ void draw_tilemap(struct Layer* layer) {
             SDL_SetTextureAlphaMod(tex, 255);
         }
     }
+    curr_layer = prev_curr_layer;
 }
 
 void draw_entities(struct Layer* layer) {
     struct Layer* values = layer->entity_tilemap_layer ? layer->entity_tilemap_layer : layer;
-    float grid_width  = theme_data[curr_theme].width  * 2.f;
-    float grid_height = theme_data[curr_theme].height * 2.f;
-    float camX = (camx * values->smx - windoww / 64.f) / values->scx + values->sox;
-    float camY = (camy * values->smy - windowh / 64.f) / values->scy + values->soy;
+    struct Layer* prev_curr_layer = curr_layer;
+    curr_layer = layer;
+    float grid_width  = curr_tileset.width  * 2.f;
+    float grid_height = curr_tileset.height * 2.f;
+    float camX = ((camx * values->smx - windoww / 64.f) / grid_width  * 32) / values->scx + values->sox;
+    float camY = ((camy * values->smy - windowh / 64.f) / grid_height * 32) / values->scy + values->soy;
     for (struct Entity* entity : layer->entities) {
         SDL_Texture* tex = get_texture(entity->meta->texture_path);
         int width, height;
@@ -324,6 +408,7 @@ void draw_entities(struct Layer* layer) {
         SDL_RenderCopy(renderer, tex, NULL, &dst);
         SDL_SetTextureAlphaMod(tex, 255);
     }
+    curr_layer = prev_curr_layer;
 }
 
 void add_layer(enum LayerType type) {
@@ -334,6 +419,7 @@ void add_layer(enum LayerType type) {
     layer.type = type;
     layer.entity_tilemap_layer = NULL;
     layer.name = "Layer " + std::to_string(++layers_created);
+    layer.tileset = 0;
     int pos = 0;
     for (int i = 0; i < layers.size(); i++) {
         if (&layers[i] == curr_layer) {
@@ -390,10 +476,10 @@ void move_layer(int from, int to) {
 void get_position_from_pixel(int inx, int iny, float* outx, float* outy) {
     if (!curr_layer) return;
     struct Layer* values = curr_layer->entity_tilemap_layer ? curr_layer->entity_tilemap_layer : curr_layer;
-    float grid_width  = theme_data[curr_theme].width  * 2.f * values->scx;
-    float grid_height = theme_data[curr_theme].height * 2.f * values->scy;
-    if (outx) *outx = (inx / grid_width ) + ((camx * values->smx - windoww / 64.f) / values->scx) + values->sox;
-    if (outy) *outy = (iny / grid_height) + ((camy * values->smy - windowh / 64.f) / values->scy) + values->soy;
+    float grid_width  = curr_tileset.width  * 2.f * values->scx;
+    float grid_height = curr_tileset.height * 2.f * values->scy;
+    if (outx) *outx = (inx / grid_width ) + (((camx * values->smx - windoww / 64.f) / (curr_tileset.width  * 2) * 32) / values->scx) + values->sox;
+    if (outy) *outy = (iny / grid_height) + (((camy * values->smy - windowh / 64.f) / (curr_tileset.height * 2) * 32) / values->scy) + values->soy;
 }
 
 void get_tile_position_from_pixel(int inx, int iny, int* outx, int* outy) {
@@ -600,6 +686,7 @@ void parse_level(unsigned char* data) {
 
         switch ((enum LayerType)type) {
         case LAYERTYPE_TILEMAP: {
+            curr_layer->tileset = reader_read<int32_t>(stream);
             int width = reader_read<int32_t>(stream);
             int height = reader_read<int32_t>(stream);
             for (int j = 0; j < width * height; j++) {
@@ -717,7 +804,8 @@ void save_file(bool force_select) {
 
         switch (layer.type) {
             case LAYERTYPE_TILEMAP:
-            writer_make_offset(stream, 8 + width * height);
+            writer_make_offset(stream, 12 + width * height);
+            writer_write<int32_t>(stream, layer.tileset);
             writer_write<int32_t>(stream, width);
             writer_write<int32_t>(stream, height);
             for (int i = 0; i < width * height; i++) {
@@ -943,17 +1031,6 @@ void editor_run(SDL_Renderer* renderer) {
         ImGui::EndMainMenuBar();
     }
 
-#undef TILESET
-#define TILESET(_1, _2) #_1 "\0"
-#define EOL "\0"
-
-    const char* str_music =
-        "grass" EOL
-    ;
-    const char* str_theme =
-#include "../../src/game/data/tilesets.h"
-    ;
-
     WINDOW(WINDOWFLAG_LEVEL_SETTINGS, "Level Settings") {
         ImGui::PushItemWidth(200);
         ImGui::Combo("Music", &curr_music, str_music);
@@ -984,6 +1061,9 @@ void editor_run(SDL_Renderer* renderer) {
             ImGui::SliderFloat("Scroll Offset", &values->soy, -10.f, 10.f, "%.3f");
             ImGui::EndDisabled();
             ImGui::PopItemWidth();
+            if (curr_layer->type == LAYERTYPE_TILEMAP) {
+                ImGui::Combo("Tileset", &curr_layer->tileset, str_tileset);
+            }
             if (curr_layer->type == LAYERTYPE_ENTITY) {
                 if (ImGui::BeginCombo("Tilemap Layer", (
                     curr_layer->entity_tilemap_layer == NULL
@@ -1004,42 +1084,47 @@ void editor_run(SDL_Renderer* renderer) {
     }
 
     WINDOW(WINDOWFLAG_TILE_PALETTE, "Tile Palette") {
-        int i = 0;
-        int curr_tile_id = 0;
-        const char* name = "";
-        bool hide = false;
-        ImGui::BeginTable("##tile_picker_table", 5);
+        if (curr_layer) {
+            int i = 0;
+            int curr_tile_id = 0;
+            const char* name = "";
+            bool hide = false;
+            ImGui::BeginTable("##tile_picker_table", 5);
 #undef TEXTURE
 #undef TILE
 #undef LVLEDIT_HIDE
 #undef SIMPLE_ANIMATED_TEXTURE
+#undef TILE_PALETTE
+#define TILE_PALETTE(_1, _2) if (curr_tileset.palette == TILE_PALETTE_##_1) { _2 }
 #define TILE(_1, _2) if (i % 5 == 0) ImGui::TableNextRow(); name = #_1; curr_tile_id = TILE_##_1; hide = false; _2 if (!hide) i++;
 #define LVLEDIT_HIDE() hide = true;
-#define SIMPLE_ANIMATED_TEXTURE(_1, delay, ...) if (!hide) {                                                            \
-            int frames[] = { __VA_ARGS__ };                                                                              \
-            int curr_frame = frames[(frames_drawn / delay) % (sizeof(frames) / sizeof(int))];                             \
-            int width, height;                                                                                             \
-            SDL_Texture* tex = get_texture(theme_data[curr_theme].texture_path);                                            \
-            SDL_QueryTexture(tex, NULL, NULL, &width, &height);                                                              \
-            float u1 = (curr_frame % theme_data[curr_theme].tiles_in_row) / ((float)width  / theme_data[curr_theme].width);   \
-            float v1 = (curr_frame / theme_data[curr_theme].tiles_in_row) / ((float)height / theme_data[curr_theme].height);   \
-            float u2 = (curr_frame % theme_data[curr_theme].tiles_in_row + 1) / ((float)width  / theme_data[curr_theme].width); \
-            float v2 = (curr_frame / theme_data[curr_theme].tiles_in_row + 1) / ((float)height / theme_data[curr_theme].height); \
-            ImGui::TableNextColumn();                                                                                             \
-            ImGui::BeginDisabled(selected_tile == curr_tile_id);                                                                   \
-            if (ImGui::ImageButton(                                                                                                 \
-                ("tile" + std::to_string(i)).c_str(),                                                                                \
-                tex,                                                                                                                  \
-                ImVec2(                                                                                                                \
-                    theme_data[curr_theme].width * 2,                                                                                   \
-                    theme_data[curr_theme].height * 2                                                                                    \
-                ), ImVec2(u1, v1), ImVec2(u2, v2)                                                                                         \
-            )) selected_tile = curr_tile_id;                                                                                               \
-            ImGui::SetItemTooltip("%s", name);                                                                                              \
-            ImGui::EndDisabled();                                                                                                            \
-        }
+#define SIMPLE_ANIMATED_TEXTURE(_1, delay, ...) if (!hide) {                                            \
+                int frames[] = { __VA_ARGS__ };                                                          \
+                int curr_frame = frames[(frames_drawn / delay) % (sizeof(frames) / sizeof(int))];         \
+                int width, height;                                                                         \
+                SDL_Texture* tex = get_texture(curr_tileset.texture_path);                                  \
+                SDL_QueryTexture(tex, NULL, NULL, &width, &height);                                          \
+                float u1 = (curr_frame % curr_tileset.tiles_in_row) / ((float)width  / curr_tileset.width);   \
+                float v1 = (curr_frame / curr_tileset.tiles_in_row) / ((float)height / curr_tileset.height);   \
+                float u2 = (curr_frame % curr_tileset.tiles_in_row + 1) / ((float)width  / curr_tileset.width); \
+                float v2 = (curr_frame / curr_tileset.tiles_in_row + 1) / ((float)height / curr_tileset.height); \
+                ImGui::TableNextColumn();                                                                         \
+                ImGui::BeginDisabled(selected_tile == curr_tile_id);                                               \
+                if (ImGui::ImageButton(                                                                             \
+                    ("tile" + std::to_string(i)).c_str(),                                                            \
+                    tex,                                                                                              \
+                    ImVec2(                                                                                            \
+                        curr_tileset.width * 2,                                                                         \
+                        curr_tileset.height * 2                                                                          \
+                    ), ImVec2(u1, v1), ImVec2(u2, v2)                                                                     \
+                )) selected_tile = curr_tile_id;                                                                           \
+                ImGui::SetItemTooltip("%s", name);                                                                          \
+                ImGui::EndDisabled();                                                                                        \
+            }
 #include "../../src/game/data/tiles.h"
-        ImGui::EndTable();
+            ImGui::EndTable();
+        }
+        else ImGui::Text("No tileset is selected");
         ImGui::End();
     }
     WINDOW(WINDOWFLAG_ENTITY_PALETTE, "Entity Palette") {
@@ -1106,9 +1191,8 @@ void editor_run(SDL_Renderer* renderer) {
     if (curr_layer) {
         struct Layer* layer = curr_layer->entity_tilemap_layer ? curr_layer->entity_tilemap_layer : curr_layer;
         if (layer->type != LAYERTYPE_ENTITY) {
-            struct ThemeData theme = theme_data[curr_theme];
             SDL_SetRenderDrawColor(renderer, 176, 176, 176, 255);
-            if (show_grid) draw_grid(renderer, (theme.width * 2) / 32.f * layer->scx, (theme.height * 2) / 32.f * layer->scy, layer->smx, layer->smy, layer->sox, layer->soy);
+            if (show_grid) draw_grid(renderer, layer->scx, layer->scy, layer->smx, layer->smy, layer->sox, layer->soy);
         }
     }
 
