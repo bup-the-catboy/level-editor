@@ -90,6 +90,7 @@ struct EntityMeta {
     bool hidden;
     const char* texture_path;
     std::map<std::string, int> properties;
+    int cropx, cropy, cropw, croph;
 };
 
 struct Entity {
@@ -182,9 +183,11 @@ union ThemeData theme_data[] = {
 #define TEXTURE(_)
 #define UPDATE(_)
 #define COLLISION(_)
+#define DEFAULT_PROPERTY(key, type, value)
 #define LVLEDIT_TEXTURE(path) .texture_path = path,
 #define LVLEDIT_HIDE() .hidden = true,
 #define LVLEDIT_PROPERTIES(...) .properties = __VA_ARGS__,
+#define LVLEDIT_CROP(x, y, w, h) .cropx = x, .cropy = y, .cropw = w, .croph = h,
 
 #define INT   EntityPropertyType_Int
 #define BOOL  EntityPropertyType_Bool
@@ -396,16 +399,29 @@ void draw_entities(struct Layer* layer) {
         SDL_Texture* tex = get_texture(entity->meta->texture_path);
         int width, height;
         SDL_QueryTexture(tex, NULL, NULL, &width, &height);
+        if (
+            entity->meta->cropx != 0 ||
+            entity->meta->cropy != 0 ||
+            entity->meta->cropw != 0 ||
+            entity->meta->croph != 0
+        ) {
+            width = entity->meta->cropw;
+            height = entity->meta->croph;
+        }
         SDL_Rect dst = (SDL_Rect){
             .x = (int)((entity->x - camX) * grid_width  * values->scx) - width,
             .y = (int)((entity->y - camY) * grid_height * values->scy) - height * 2,
             .w = width  * 2,
             .h = height * 2
         };
+        SDL_Rect src = (SDL_Rect){
+            entity->meta->cropx, entity->meta->cropy,
+            entity->meta->cropw, entity->meta->croph
+        };
         Uint8 a;
         SDL_GetRenderDrawColor(renderer, NULL, NULL, NULL, &a);
         SDL_SetTextureAlphaMod(tex, a);
-        SDL_RenderCopy(renderer, tex, NULL, &dst);
+        SDL_RenderCopy(renderer, tex, &src, &dst);
         SDL_SetTextureAlphaMod(tex, 255);
     }
     curr_layer = prev_curr_layer;
@@ -1136,7 +1152,23 @@ void editor_run(SDL_Renderer* renderer) {
             ImGui::TableNextColumn();
             SDL_Texture* tex = get_texture(entity_data[i].texture_path);
             int width, height;
+            int cropx = 0, cropy = 0;
             SDL_QueryTexture(tex, NULL, NULL, &width, &height);
+            float tex_width = width;
+            float tex_height = height;
+            if (
+                entity_data[i].cropx != 0 ||
+                entity_data[i].cropy != 0 ||
+                entity_data[i].cropw != 0 ||
+                entity_data[i].croph != 0
+            ) {
+                cropx = entity_data[i].cropx;
+                cropy = entity_data[i].cropy;
+                width = entity_data[i].cropw;
+                height = entity_data[i].croph;
+            }
+            ImVec2 u = ImVec2(cropx / tex_width, cropy / tex_height);
+            ImVec2 v = ImVec2((cropx + width) / tex_width, (cropy + height) / tex_height);
             width *= 2;
             height *= 2;
             if (width > 32) {
@@ -1151,7 +1183,8 @@ void editor_run(SDL_Renderer* renderer) {
             if (ImGui::ImageButton(
                 ("entity" + std::to_string(iter)).c_str(),
                 tex,
-                ImVec2(width, height)
+                ImVec2(width, height),
+                u, v
             )) selected_entity = &entity_data[i];
             ImGui::SetItemTooltip("%s", entity_data[i].name);
             ImGui::EndDisabled();
