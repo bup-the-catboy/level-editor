@@ -3,6 +3,7 @@
 #include <SDL2/SDL_render.h>
 #include <cstdarg>
 #include <cstddef>
+#include <cstring>
 #include <map>
 #include <vector>
 #include <string>
@@ -75,12 +76,14 @@ union EntityProperty {
     int asInt;
     bool asBool;
     float asFloat;
+    void* asPtr;
 };
 
 enum EntityPropertyType {
     EntityPropertyType_Int,
     EntityPropertyType_Bool,
     EntityPropertyType_Float,
+    EntityPropertyType_String,
 };
 
 struct EntityMeta {
@@ -89,8 +92,8 @@ struct EntityMeta {
     float height;
     bool hidden;
     const char* texture_path;
-    std::map<std::string, int> properties;
     int cropx, cropy, cropw, croph;
+    std::map<std::string, int> properties;
 };
 
 struct Entity {
@@ -117,6 +120,16 @@ struct TilesetData {
     const char* texture_path;
     int width, height;
     int tiles_in_row;
+};
+
+struct Warp {
+    int next_theme;
+    int next_music;
+    int next_cambound;
+    int next_level;
+    int next_layer;
+    float next_pos_x;
+    float next_pos_y;
 };
 
 #define NO_VSCODE
@@ -186,16 +199,22 @@ union ThemeData theme_data[] = {
 #define DEFAULT_PROPERTY(key, type, value)
 #define LVLEDIT_TEXTURE(path) .texture_path = path,
 #define LVLEDIT_HIDE() .hidden = true,
-#define LVLEDIT_PROPERTIES(...) .properties = __VA_ARGS__,
+#define LVLEDIT_PROPERTIES(...) .properties = { __VA_ARGS__ },
 #define LVLEDIT_CROP(x, y, w, h) .cropx = x, .cropy = y, .cropw = w, .croph = h,
 
-#define INT   EntityPropertyType_Int
-#define BOOL  EntityPropertyType_Bool
-#define FLOAT EntityPropertyType_Float
+#define int(x)    { #x, EntityPropertyType_Int },
+#define bool(x)   { #x, EntityPropertyType_Bool },
+#define float(x)  { #x, EntityPropertyType_Float },
+#define string(x) { #x, EntityPropertyType_String },
 
 struct EntityMeta entity_data[] = {
 #include "../../src/game/data/entities.h"
 };
+
+#undef int
+#undef bool
+#undef float
+#undef string
 
 #undef ENUM
 #undef TILE_PALETTE
@@ -218,7 +237,7 @@ enum TileIDs {
 #define SIMPLE_STATIONARY_TEXTURE(_1) SIMPLE_ANIMATED_TEXTURE(1, 1, _1)
 #define LVLEDIT_HIDE()
 #define SIMPLE_ANIMATED_TEXTURE(frames, delay, ...) tile_frame_data[curr_palette][curr_tile] = { true, delay, { __VA_ARGS__ } };
-struct { 
+struct {
     bool textured;
     int delay;
     std::vector<int> frames;
@@ -271,6 +290,7 @@ int curr_cambound = 0;
 struct Layer* curr_layer = NULL;
 std::vector<std::pair<int, int>> cambounds = {};
 std::vector<struct Layer> layers = {};
+std::vector<struct Warp> warps = {};
 std::map<std::string, SDL_Texture*> texture_cache = {};
 int selected_tile = 0;
 struct Entity* grabbed_entity;
@@ -513,7 +533,8 @@ struct Entity* create_entity(float x, float y) {
     entity->meta = selected_entity;
     entity->properties = {};
     for (auto prop : entity->meta->properties) {
-        entity->properties.insert({ prop.first, (union EntityProperty){ .asInt = 0 } });
+        entity->properties.insert({ prop.first, (union EntityProperty){ .asPtr = 0 } });
+        if (prop.second == EntityPropertyType_String) entity->properties[prop.first].asPtr = calloc(sizeof(char), 256);
     }
     return entity;
 }
@@ -680,7 +701,23 @@ void parse_level(unsigned char* data) {
     reader_pop_block(stream);
 
     reader_skip(stream, 4); // todo
-    reader_skip(stream, 4); // todo
+
+    reader_goto(stream);
+    int num_warps = reader_read<int32_t>(stream);
+    for (int i = 0; i < num_warps; i++) {
+        reader_goto(stream);
+        Warp warp;
+        warp.next_theme    = reader_read<int32_t>(stream);
+        warp.next_music    = reader_read<int32_t>(stream);
+        warp.next_cambound = reader_read<int32_t>(stream);
+        warp.next_level    = reader_read<int32_t>(stream);
+        warp.next_layer    = reader_read<int32_t>(stream);
+        warp.next_pos_x    = reader_read<float  >(stream);
+        warp.next_pos_y    = reader_read<float  >(stream);
+        warps.push_back(warp);
+        reader_pop_block(stream);
+    }
+    reader_pop_block(stream);
 
     reader_goto(stream);
     layers = {};
@@ -723,10 +760,27 @@ void parse_level(unsigned char* data) {
                 reader_skip(stream, 3);
                 float x = reader_read<float>(stream);
                 float y = reader_read<float>(stream);
-                selected_entity = &entity_data[id];
-                struct Entity* entity = create_entity(x, y);
-                curr_layer->entities.push_back(entity);
-                reader_skip(stream, 4); // todo
+                if (!entity_data[id].hidden) {
+                    selected_entity = &entity_data[id];
+                    struct Entity* entity = create_entity(x, y);
+                    curr_layer->entities.push_back(entity);
+                    int num_properties = reader_read<int32_t>(stream);
+                    for (int k = 0; k < num_properties; k++) {
+                        reader_goto(stream);
+                        std::string name = reader_read_string(stream);
+                        int type = reader_read<uint8_t>(stream);
+                        switch (type) {
+                            case EntityPropertyType_Int:   entity->properties[name].asInt   = reader_read<int32_t>(stream); break;
+                            case EntityPropertyType_Bool:  entity->properties[name].asBool  = reader_read<uint8_t>(stream); break;
+                            case EntityPropertyType_Float: entity->properties[name].asFloat = reader_read<float  >(stream); break;
+                            case EntityPropertyType_String:
+                                entity->properties[name].asPtr = calloc(sizeof(char), 256);
+                                std::strncpy((char*)entity->properties[name].asPtr, reader_read_string(stream).c_str(), 256);
+                                break;
+                        }
+                        reader_pop_block(stream);
+                    }
+                }
                 reader_pop_block(stream);
             }
         } break;
@@ -746,7 +800,10 @@ void parse_level(unsigned char* data) {
 
     for (int i = 0; i < layers.size(); i++) {
         if (layers[i].type != LAYERTYPE_ENTITY) continue;
-        layers[i].entity_tilemap_layer = &layers[(uintptr_t)layers[i].entity_tilemap_layer];
+        if ((uintptr_t)layers[i].entity_tilemap_layer == (uintptr_t)-1)
+            layers[i].entity_tilemap_layer = NULL;
+        else
+            layers[i].entity_tilemap_layer = &layers[(uintptr_t)layers[i].entity_tilemap_layer];
     }
 }
 
@@ -792,8 +849,19 @@ void save_file(bool force_select) {
     writer_write<int32_t>(stream, 0); // todo
     writer_pop_block(stream);
 
-    writer_make_offset(stream, 4);
-    writer_write<int32_t>(stream, 0); // todo
+    writer_make_offset(stream, 4 + warps.size() * 4);
+    writer_write<int32_t>(stream, warps.size());
+    for (struct Warp warp : warps) {
+        writer_make_offset(stream, 4 * 7);
+        writer_write<int32_t>(stream, warp.next_theme);
+        writer_write<int32_t>(stream, warp.next_music);
+        writer_write<int32_t>(stream, warp.next_cambound);
+        writer_write<int32_t>(stream, warp.next_level);
+        writer_write<int32_t>(stream, warp.next_layer);
+        writer_write<float>  (stream, warp.next_pos_y);
+        writer_write<float>  (stream, warp.next_pos_x);
+        writer_pop_block(stream);
+    }
     writer_pop_block(stream);
 
     writer_make_offset(stream, 4 + layers.size() * 4);
@@ -841,12 +909,30 @@ void save_file(bool force_select) {
             writer_write<int32_t>(stream, tilemap_index);
             writer_write<int32_t>(stream, layer.entities.size());
             for (int i = 0; i < layer.entities.size(); i++) {
-                writer_make_offset(stream, 16);
+                writer_make_offset(stream, 16 + layer.entities[i]->properties.size() * 4);
                 writer_write<uint8_t>(stream, arrindex(entity_data, layer.entities[i]->meta));
                 writer_skip(stream, 3);
                 writer_write<float>(stream, layer.entities[i]->x - offset_x);
                 writer_write<float>(stream, layer.entities[i]->y - offset_y);
-                writer_write<int32_t>(stream, 0); // todo
+                writer_write<int32_t>(stream, layer.entities[i]->properties.size());
+                for (auto& prop : layer.entities[i]->properties) {
+                    int type = layer.entities[i]->meta->properties[prop.first];
+                    writer_make_offset(stream, 2 + prop.first.length() + (
+                        type == EntityPropertyType_Int    ? 4 :
+                        type == EntityPropertyType_Bool   ? 1 :
+                        type == EntityPropertyType_Float  ? 4 :
+                        type == EntityPropertyType_String ? strlen((char*)prop.second.asPtr) + 1: 0
+                    ));
+                    writer_write_ptr(stream, (void*)prop.first.c_str(), prop.first.length() + 1);
+                    writer_write<uint8_t>(stream, type);
+                    switch (type) {
+                        case EntityPropertyType_Int:    writer_write<int32_t>(stream, prop.second.asInt);   break;
+                        case EntityPropertyType_Bool:   writer_write<uint8_t>(stream, prop.second.asBool);  break;
+                        case EntityPropertyType_Float:  writer_write<float  >(stream, prop.second.asFloat); break;
+                        case EntityPropertyType_String: writer_write_ptr     (stream, prop.second.asPtr, strlen((char*)prop.second.asPtr) + 1); break;
+                    }
+                    writer_pop_block(stream);
+                }
                 writer_pop_block(stream);
             }
             writer_pop_block(stream);
@@ -1197,19 +1283,62 @@ void editor_run(SDL_Renderer* renderer) {
         if (!current_entity) ImGui::Text("No entity selected");
         else {
             ImGui::DragFloat("X", &current_entity->x, 1 / (32.f * curr_layer->scx));
-            ImGui::DragFloat("Y", &current_entity->x, 1 / (32.f * curr_layer->scy));
+            ImGui::DragFloat("Y", &current_entity->y, 1 / (32.f * curr_layer->scy));
             if (current_entity->meta->properties.empty()) ImGui::Text("No properties to edit");
             else {
                 for (auto prop : current_entity->meta->properties) {
                     if (prop.second == EntityPropertyType_Int) ImGui::DragInt(prop.first.c_str(), &current_entity->properties[prop.first].asInt);
                     if (prop.second == EntityPropertyType_Float) ImGui::DragFloat(prop.first.c_str(), &current_entity->properties[prop.first].asFloat);
                     if (prop.second == EntityPropertyType_Bool) ImGui::Checkbox(prop.first.c_str(), &current_entity->properties[prop.first].asBool);
+                    if (prop.second == EntityPropertyType_String) ImGui::InputText(prop.first.c_str(), (char*)current_entity->properties[prop.first].asPtr, 256);
                 }
             }
         }
         ImGui::End();
     }
-    WINDOW(WINDOWFLAG_WARPS, "Warps") { ImGui::End(); }
+    WINDOW(WINDOWFLAG_WARPS, "Warps") {
+        if (ImGui::Button("Add")) {
+            warps.push_back((Warp){
+                .next_theme = 0,
+                .next_music = 0,
+                .next_cambound = 0,
+                .next_level = 0,
+                .next_layer = 0,
+                .next_pos_x = 0,
+                .next_pos_y = 0
+            });
+        }
+        for (int i = 0; i < warps.size(); i++) {
+            if (ImGui::SmallButton(("X##" + std::to_string(i)).c_str())) {
+                warps.erase(warps.begin() + i);
+                i--;
+                continue;
+            }
+            ImGui::SameLine();
+            if (ImGui::BeginMenu(("Warp " + std::to_string(i)).c_str())) {
+                ImGui::PushItemWidth(200);
+                ImGui::Combo("Music", &warps[i].next_music, str_music);
+                ImGui::Combo("Theme", &warps[i].next_theme, str_theme);
+                ImGui::InputInt("Cambound", &warps[i].next_cambound);
+                ImGui::InputInt("Layer", &warps[i].next_layer);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(?)");
+                if (ImGui::IsItemHovered()) {
+                    ImGui::BeginTooltip();
+                    ImGui::Text("Be careful when selecting a layer,");
+                    ImGui::Text("as warping to non-entity layers");
+                    ImGui::Text("crashes the game.");
+                    ImGui::EndTooltip();
+                }
+                ImGui::InputInt("Level", &warps[i].next_level);
+                ImGui::InputFloat("Pos X", &warps[i].next_pos_x);
+                ImGui::InputFloat("Pos Y", &warps[i].next_pos_y);
+                ImGui::PopItemWidth();
+                ImGui::EndMenu();
+            }
+        }
+        ImGui::End();
+    }
 
     for (int i = layers.size() - 1; i >= 0; i--) {
         int opacity;
@@ -1220,7 +1349,7 @@ void editor_run(SDL_Renderer* renderer) {
         if (layers[i].type == LAYERTYPE_TILEMAP) draw_tilemap(&layers[i]);
         if (layers[i].type == LAYERTYPE_ENTITY) draw_entities(&layers[i]);
     }
-    
+
     if (curr_layer) {
         struct Layer* layer = curr_layer->entity_tilemap_layer ? curr_layer->entity_tilemap_layer : curr_layer;
         if (layer->type != LAYERTYPE_ENTITY) {

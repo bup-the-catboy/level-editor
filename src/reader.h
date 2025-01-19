@@ -4,6 +4,7 @@
 #include <vector>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 
 #define curr_ptr ptr[0]
 #define push_ptr(x) ptr.insert(stream->ptr.begin(), x)
@@ -38,6 +39,12 @@ static void reader_pop_block(ReadStream* stream) {
 static void reader_read_ptr(ReadStream* stream, void* out, int size) {
     memcpy(out, stream->data + stream->curr_ptr, size);
     stream->curr_ptr += size;
+}
+
+static std::string reader_read_string(ReadStream* stream) {
+    std::string str = std::string((char*)stream->data + stream->curr_ptr);
+    stream->curr_ptr += str.length() + 1;
+    return str;
 }
 
 static void reader_skip(ReadStream* stream, int bytes) {
