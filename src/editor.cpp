@@ -196,6 +196,7 @@ union ThemeData theme_data[] = {
 #define TEXTURE(_)
 #define UPDATE(_)
 #define COLLISION(_)
+#define FLAGS(_)
 #define DEFAULT_PROPERTY(key, type, value)
 #define LVLEDIT_TEXTURE(path) .texture_path = path,
 #define LVLEDIT_HIDE() .hidden = true,
