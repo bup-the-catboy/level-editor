@@ -93,7 +93,7 @@ struct EntityMeta {
     bool hidden;
     const char* texture_path;
     int cropx, cropy, cropw, croph;
-    std::map<std::string, int> properties;
+    std::map<std::string, std::pair<int, union EntityProperty>> properties;
 };
 
 struct Entity {
@@ -203,10 +203,10 @@ union ThemeData theme_data[] = {
 #define LVLEDIT_PROPERTIES(...) .properties = { __VA_ARGS__ },
 #define LVLEDIT_CROP(x, y, w, h) .cropx = x, .cropy = y, .cropw = w, .croph = h,
 
-#define int(x)    { #x, EntityPropertyType_Int },
-#define bool(x)   { #x, EntityPropertyType_Bool },
-#define float(x)  { #x, EntityPropertyType_Float },
-#define string(x) { #x, EntityPropertyType_String },
+#define int(   x, def) { #x, { EntityPropertyType_Int,    { .asInt   =        def } } },
+#define bool(  x, def) { #x, { EntityPropertyType_Bool,   { .asBool  =        def } } },
+#define float( x, def) { #x, { EntityPropertyType_Float,  { .asFloat =        def } } },
+#define string(x, def) { #x, { EntityPropertyType_String, { .asPtr   = (void*)def } } },
 
 struct EntityMeta entity_data[] = {
 #include "../../src/game/data/entities.h"
@@ -534,8 +534,12 @@ struct Entity* create_entity(float x, float y) {
     entity->meta = selected_entity;
     entity->properties = {};
     for (auto prop : entity->meta->properties) {
-        entity->properties.insert({ prop.first, (union EntityProperty){ .asPtr = 0 } });
-        if (prop.second == EntityPropertyType_String) entity->properties[prop.first].asPtr = calloc(sizeof(char), 256);
+        entity->properties.insert({ prop.first, prop.second.second });
+        if (prop.second.first == EntityPropertyType_String) {
+            union EntityProperty& e = entity->properties[prop.first];
+            e.asPtr = calloc(256, 1);
+            strcpy((char*)entity, (char*)prop.second.second.asPtr);
+        }
     }
     return entity;
 }
@@ -582,6 +586,9 @@ void eraser_drag(int x, int y, int dx, int dy) {
             struct Entity* entity = curr_layer->entities[i];
             if (is_on_entity(entity, x, y)) {
                 delete entity;
+                for (auto& prop : curr_layer->entities[i]->properties) {
+                    if (curr_layer->entities[i]->meta->properties[prop.first].first == EntityPropertyType_String) free(prop.second.asPtr);
+                }
                 curr_layer->entities.erase(curr_layer->entities.begin() + i);
                 i--;
             }
@@ -917,7 +924,7 @@ void save_file(bool force_select) {
                 writer_write<float>(stream, layer.entities[i]->y - offset_y);
                 writer_write<int32_t>(stream, layer.entities[i]->properties.size());
                 for (auto& prop : layer.entities[i]->properties) {
-                    int type = layer.entities[i]->meta->properties[prop.first];
+                    int type = layer.entities[i]->meta->properties[prop.first].first;
                     writer_make_offset(stream, 2 + prop.first.length() + (
                         type == EntityPropertyType_Int    ? 4 :
                         type == EntityPropertyType_Bool   ? 1 :
@@ -1288,10 +1295,10 @@ void editor_run(SDL_Renderer* renderer) {
             if (current_entity->meta->properties.empty()) ImGui::Text("No properties to edit");
             else {
                 for (auto prop : current_entity->meta->properties) {
-                    if (prop.second == EntityPropertyType_Int) ImGui::DragInt(prop.first.c_str(), &current_entity->properties[prop.first].asInt);
-                    if (prop.second == EntityPropertyType_Float) ImGui::DragFloat(prop.first.c_str(), &current_entity->properties[prop.first].asFloat);
-                    if (prop.second == EntityPropertyType_Bool) ImGui::Checkbox(prop.first.c_str(), &current_entity->properties[prop.first].asBool);
-                    if (prop.second == EntityPropertyType_String) ImGui::InputText(prop.first.c_str(), (char*)current_entity->properties[prop.first].asPtr, 256);
+                    if (prop.second.first == EntityPropertyType_Int)    ImGui::DragInt  (prop.first.c_str(),       &current_entity->properties[prop.first].asInt);
+                    if (prop.second.first == EntityPropertyType_Float)  ImGui::DragFloat(prop.first.c_str(),       &current_entity->properties[prop.first].asFloat);
+                    if (prop.second.first == EntityPropertyType_Bool)   ImGui::Checkbox (prop.first.c_str(),       &current_entity->properties[prop.first].asBool);
+                    if (prop.second.first == EntityPropertyType_String) ImGui::InputText(prop.first.c_str(), (char*)current_entity->properties[prop.first].asPtr, 256);
                 }
             }
         }
