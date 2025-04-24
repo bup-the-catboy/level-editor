@@ -265,10 +265,12 @@ void init_tile_frame_data() {
 
 #undef THEME
 #undef THEME_TILESET
-#define THEME(_1, _2) const char* strs_theme[256] = { [THEME_##_1] = _2 "\0" };
-#define THEME_TILESET(_1, _2) #_1 " (" #_2 ")",
+#define THEME(_1, _2) [THEME_##_1] = _2,
+#define THEME_TILESET(_1, _2) #_1 " (" #_2 ")" "\0"
 
+const char* strs_theme[256] = {
 #include "../../src/game/data/themes.h"
+};
 
 #define str_tileset strs_theme[curr_theme]
 
