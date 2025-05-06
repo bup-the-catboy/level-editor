@@ -314,6 +314,7 @@ std::string format_string(const char* fmt, ...) {
 }
 
 SDL_Texture* get_texture(const char* texture_path) {
+    if (!texture_path) return NULL;
     if (texture_cache.find(texture_path) == texture_cache.end()) {
         int w, h, c;
         unsigned char* data = stbi_load((std::string("../assets/") + texture_path).c_str(), &w, &h, &c, 4);
@@ -541,7 +542,7 @@ struct Entity* create_entity(float x, float y) {
         if (prop.second.first == EntityPropertyType_String) {
             union EntityProperty& e = entity->properties[prop.first];
             e.asPtr = calloc(256, 1);
-            strcpy((char*)entity, (char*)prop.second.second.asPtr);
+            strcpy((char*)e.asPtr, (char*)prop.second.second.asPtr);
         }
     }
     return entity;
