@@ -589,10 +589,10 @@ void eraser_drag(int x, int y, int dx, int dy) {
         for (int i = 0; i < curr_layer->entities.size(); i++) {
             struct Entity* entity = curr_layer->entities[i];
             if (is_on_entity(entity, x, y)) {
-                delete entity;
-                for (auto& prop : curr_layer->entities[i]->properties) {
-                    if (curr_layer->entities[i]->meta->properties[prop.first].first == EntityPropertyType_String) free(prop.second.asPtr);
+                for (auto& prop : entity->properties) {
+                    if (entity->meta->properties[prop.first].first == EntityPropertyType_String) free(prop.second.asPtr);
                 }
+                delete entity;
                 curr_layer->entities.erase(curr_layer->entities.begin() + i);
                 i--;
             }
