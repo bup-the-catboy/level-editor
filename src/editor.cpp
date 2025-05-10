@@ -275,6 +275,10 @@ const char* strs_theme[256] = {
 
 #define str_tileset strs_theme[curr_theme]
 
+struct Rectangle {
+    int x1, y1, x2, y2;
+};
+
 extern SDL_Renderer* renderer;
 extern SDL_Window* window;
 
@@ -292,7 +296,7 @@ int curr_music = 0;
 int curr_theme = 0;
 int curr_cambound = 0;
 struct Layer* curr_layer = NULL;
-std::vector<std::pair<int, int>> cambounds = {};
+std::vector<std::vector<Rectangle>> cambounds = {};
 std::vector<struct Layer> layers = {};
 std::vector<struct Warp> warps = {};
 std::map<std::string, SDL_Texture*> texture_cache = {};
@@ -300,6 +304,9 @@ int selected_tile = 0;
 struct Entity* grabbed_entity;
 struct Entity* current_entity;
 struct EntityMeta* selected_entity;
+struct {
+    int *x, *y;
+} grabbed_point;
 
 int frames_drawn = 0;
 int layers_created = 0;
@@ -326,6 +333,13 @@ SDL_Texture* get_texture(const char* texture_path) {
     return texture_cache[texture_path];
 }
 
+Rectangle fix_rectangle(Rectangle rect) {
+    Rectangle fixed = rect;
+    if (fixed.x2 < fixed.x1) std::swap(fixed.x1, fixed.x2);
+    if (fixed.y2 < fixed.y1) std::swap(fixed.y1, fixed.y2);
+    return fixed;
+}
+
 void set_tile(int x, int y, int tile) {
     uint64_t coord = (Point){ .x = x, .y = y }.id;
     auto pos = curr_layer->tilemap.find(coord);
@@ -347,11 +361,11 @@ int get_tile_from_layer(struct Layer* layer, int x, int y) {
 
 int get_tile(int x, int y) {
     return get_tile_from_layer(curr_layer, x, y);
-} 
+}
 
-void draw_grid(SDL_Renderer* renderer, float scalex, float scaley, float speedx, float speedy, float offsetx, float offsety) {
-    float grid_width  = curr_tileset.width  * 2.f;
-    float grid_height = curr_tileset.height * 2.f;
+void draw_grid(SDL_Renderer* renderer, float scalex, float scaley, float speedx, float speedy, float offsetx, float offsety, float tile_width, float tile_height) {
+    float grid_width  = tile_width  * 2.f;
+    float grid_height = tile_height * 2.f;
     float camX = (camx / grid_width  * 32) / scalex * speedx + offsetx;
     float camY = (camy / grid_height * 32) / scaley * speedy + offsety;
     int width = windoww / scalex / grid_width + 4;
@@ -712,7 +726,24 @@ void parse_level(unsigned char* data) {
     curr_cambound = reader_read<int32_t>(stream);
     reader_pop_block(stream);
 
-    reader_skip(stream, 4); // todo
+    reader_goto(stream);
+    int num_cambounds = reader_read<int32_t>(stream);
+    cambounds.clear();
+    for (int i = 0; i < num_cambounds; i++) {
+        reader_goto(stream);
+        int num_rects = reader_read<int32_t>(stream);
+        cambounds.push_back({});
+        for (int j = 0; j < num_rects; j++) {
+            Rectangle rect;
+            rect.x1 = reader_read<float>(stream);
+            rect.y1 = reader_read<float>(stream);
+            rect.x2 = reader_read<float>(stream) + rect.x1;
+            rect.y2 = reader_read<float>(stream) + rect.y1;
+            cambounds.back().push_back(rect);
+        }
+        reader_pop_block(stream);
+    }
+    reader_pop_block(stream);
 
     reader_goto(stream);
     int num_warps = reader_read<int32_t>(stream);
@@ -857,8 +888,20 @@ void save_file(bool force_select) {
     writer_write<int32_t>(stream, curr_cambound);
     writer_pop_block(stream);
 
-    writer_make_offset(stream, 4);
-    writer_write<int32_t>(stream, 0); // todo
+    writer_make_offset(stream, cambounds.size() * 4 + 4);
+    writer_write<int32_t>(stream, cambounds.size());
+    for (auto cambound : cambounds) {
+        writer_make_offset(stream, cambound.size() * 16 + 4);
+        writer_write<int32_t>(stream, cambound.size());
+        for (auto rect : cambound) {
+            rect = fix_rectangle(rect);
+            writer_write<float>(stream, rect.x1);
+            writer_write<float>(stream, rect.y1);
+            writer_write<float>(stream, rect.x2 - rect.x1);
+            writer_write<float>(stream, rect.y2 - rect.y1);
+        }
+        writer_pop_block(stream);
+    }
     writer_pop_block(stream);
 
     writer_make_offset(stream, 4 + warps.size() * 4);
@@ -1149,14 +1192,23 @@ void editor_run(SDL_Renderer* renderer) {
         ImGui::PushItemWidth(200);
         ImGui::Combo("Music", &curr_music, str_music);
         ImGui::Combo("Theme", &curr_theme, str_theme);
+        ImGui::SeparatorText("Camera Bounds");
         ImGui::BeginDisabled(cambounds.size() == 0);
-        if (ImGui::InputInt("Camera Boundary", &curr_cambound)) {
-            if (curr_cambound < 0) curr_cambound = 0;
-            if (curr_cambound >= cambounds.size()) curr_cambound = cambounds.size() - 1;
+        ImGui::InputInt("Bound ID", &curr_cambound);
+        if (ImGui::Button("Delete")) {
+            cambounds.erase(cambounds.begin() + curr_cambound);
+            curr_cambound--;
         }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Add")) {
+            curr_cambound = cambounds.size();
+            cambounds.push_back({});
+        }
         ImGui::PopItemWidth();
         ImGui::End();
+        if (curr_cambound < 0) curr_cambound = 0;
+        if (curr_cambound >= cambounds.size()) curr_cambound = cambounds.size() - 1;
     }
 
     WINDOW(WINDOWFLAG_LAYER_SETTINGS, "Layer Settings") {
@@ -1362,11 +1414,36 @@ void editor_run(SDL_Renderer* renderer) {
         if (layers[i].type == LAYERTYPE_ENTITY) draw_entities(&layers[i]);
     }
 
-    if (curr_layer) {
-        struct Layer* layer = curr_layer->entity_tilemap_layer ? curr_layer->entity_tilemap_layer : curr_layer;
-        if (layer->type != LAYERTYPE_ENTITY) {
-            SDL_SetRenderDrawColor(renderer, 176, 176, 176, 255);
-            if (show_grid) draw_grid(renderer, layer->scx, layer->scy, layer->smx, layer->smy, layer->sox, layer->soy);
+    if (curr_mode == EDITMODE_LAYER) {
+        if (curr_layer) {
+            struct Layer* layer = curr_layer->entity_tilemap_layer ? curr_layer->entity_tilemap_layer : curr_layer;
+            if (layer->type != LAYERTYPE_ENTITY) {
+                SDL_SetRenderDrawColor(renderer, 176, 176, 176, 255);
+                if (show_grid) draw_grid(renderer, layer->scx, layer->scy, layer->smx, layer->smy, layer->sox, layer->soy, curr_tileset.width, curr_tileset.height);
+            }
+        }
+    }
+    if (curr_mode == EDITMODE_CAMBOUND) {
+        SDL_SetRenderDrawColor(renderer, 176, 176, 176, 255);
+        if (show_grid) draw_grid(renderer, 1, 1, 1, 1, 0, 0, 16, 16);
+        if (!cambounds.empty()) {
+            for (Rectangle rect : cambounds[curr_cambound]) {
+                rect = fix_rectangle(rect);
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 32);
+                float x1 = (rect.x1 - (camx - windoww / 64.f)) * 32.f;
+                float y1 = (rect.y1 - (camy - windowh / 64.f)) * 32.f;
+                float x2 = (rect.x2 - (camx - windoww / 64.f)) * 32.f;
+                float y2 = (rect.y2 - (camy - windowh / 64.f)) * 32.f;
+                SDL_FRect r = (SDL_FRect){ .x = x1, .y = y1, .w = x2 - x1, .h = y2 - y1 };
+                SDL_RenderFillRectF(renderer, &r);
+                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+                SDL_RenderDrawRectF(renderer, &r);
+                SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+                r = { .x = x1 - 4, .y = y1 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
+                r = { .x = x2 - 4, .y = y1 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
+                r = { .x = x2 - 4, .y = y2 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
+                r = { .x = x1 - 4, .y = y2 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
+            }
         }
     }
 
@@ -1398,25 +1475,71 @@ void editor_process_event(SDL_Event* event) {
 
     if (!ImGui::GetIO().WantCaptureMouse) {
         if (event->type == SDL_MOUSEMOTION) {
-            if (event->motion.state & SDL_BUTTON(SDL_BUTTON_LEFT)) {
-                tools[curr_tool].drag(
-                    event->motion.x, event->motion.y,
-                    event->motion.xrel, event->motion.yrel
-                );
-            }
             if (event->motion.state & SDL_BUTTON(SDL_BUTTON_RIGHT)) {
                 actual_camx -= event->motion.xrel / 32.f;
                 actual_camy -= event->motion.yrel / 32.f;
             }
         }
-        if (event->type == SDL_MOUSEBUTTONDOWN) {
-            if (event->button.button == SDL_BUTTON_LEFT) {
-                curr_tool = selected_tool;
-                tools[curr_tool].start(event->button.x, event->button.y);
+
+        if (curr_mode == EDITMODE_LAYER) {
+            if (event->type == SDL_MOUSEMOTION) {
+                if (event->motion.state & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+                    tools[curr_tool].drag(
+                        event->motion.x, event->motion.y,
+                        event->motion.xrel, event->motion.yrel
+                    );
+                }
+            }
+            if (event->type == SDL_MOUSEBUTTONDOWN) {
+                if (event->button.button == SDL_BUTTON_LEFT) {
+                    curr_tool = selected_tool;
+                    tools[curr_tool].start(event->button.x, event->button.y);
+                }
+            }
+            if (event->type == SDL_MOUSEBUTTONUP) {
+                if (event->button.button == SDL_BUTTON_LEFT) tools[curr_tool].end();
             }
         }
-        if (event->type == SDL_MOUSEBUTTONUP) {
-            if (event->button.button == SDL_BUTTON_LEFT) tools[curr_tool].end();
+        else if (curr_mode == EDITMODE_CAMBOUND && !cambounds.empty()) {
+            if (event->type == SDL_MOUSEMOTION) {
+                if (event->motion.state & SDL_BUTTON(SDL_BUTTON_LEFT)) {
+                    if (grabbed_point.x && grabbed_point.y) {
+                        float x = event->button.x / 32.f + (camx - windoww / 64.f) + 0.5;
+                        float y = event->button.y / 32.f + (camy - windowh / 64.f) + 0.5;
+                        *grabbed_point.x = floor(x);
+                        *grabbed_point.y = floor(y);
+                    }
+                }
+            }
+            if (event->type == SDL_MOUSEBUTTONDOWN) {
+                if (event->button.button == SDL_BUTTON_LEFT) {
+                    float x = event->button.x / 32.f + (camx - windoww / 64.f) + 0.5;
+                    float y = event->button.y / 32.f + (camy - windowh / 64.f) + 0.5;
+                    int  tx = floor(x);
+                    int  ty = floor(y);
+                    float d = sqrt((x - tx - 0.5) * (x - tx - 0.5) + (y - ty - 0.5) * (y - ty - 0.5));
+                    if (d <= 0.25) for (auto& rect : cambounds[curr_cambound]) {
+                        if      (rect.x1 == tx && rect.y1 == ty) grabbed_point = (typeof(grabbed_point)){ .x = &rect.x1, .y = &rect.y1 };
+                        else if (rect.x2 == tx && rect.y1 == ty) grabbed_point = (typeof(grabbed_point)){ .x = &rect.x2, .y = &rect.y1 };
+                        else if (rect.x1 == tx && rect.y2 == ty) grabbed_point = (typeof(grabbed_point)){ .x = &rect.x1, .y = &rect.y2 };
+                        else if (rect.x2 == tx && rect.y2 == ty) grabbed_point = (typeof(grabbed_point)){ .x = &rect.x2, .y = &rect.y2 };
+                        else continue;
+                        break;
+                    }
+                    if (grabbed_point.x && grabbed_point.y) return;
+                    cambounds[curr_cambound].push_back({ .x1 = tx, .y1 = ty, .x2 = tx, .y2 = ty });
+                    grabbed_point = (typeof(grabbed_point)){ .x = &cambounds[curr_cambound].back().x2, .y = &cambounds[curr_cambound].back().y2 };
+                }
+            }
+            if (event->type == SDL_MOUSEBUTTONUP) {
+                if (event->button.button == SDL_BUTTON_LEFT) {
+                    auto& c = cambounds[curr_cambound];
+                    c.erase(std::remove_if(c.begin(), c.end(), [](Rectangle& rect) {
+                        return rect.x1 == rect.x2 || rect.y1 == rect.y2;
+                    }), c.end());
+                    grabbed_point.x = grabbed_point.y = NULL;
+                }
+            }
         }
     }
 }
