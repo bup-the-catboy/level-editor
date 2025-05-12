@@ -922,24 +922,24 @@ void save_file(bool force_select) {
     writer_make_offset(stream, 4 + layers.size() * 4);
     writer_write<int32_t>(stream, layers.size());
     for (struct Layer layer : layers) {
+        Layer* settings_layer = &layer;
         int width, height;
         char* tilemap_data = NULL;
         int tilemap_index = -1;
         int offset_x = 0, offset_y = 0;
-        if (layer.type == LAYERTYPE_ENTITY && layer.entity_tilemap_layer) get_tilemap_size(layer.entity_tilemap_layer, &width, &height, &offset_x, &offset_y);
+        if (layer.type == LAYERTYPE_ENTITY && layer.entity_tilemap_layer) {
+            settings_layer = layer.entity_tilemap_layer;
+            get_tilemap_size(settings_layer, &width, &height, &offset_x, &offset_y);
+        }
         if (layer.type == LAYERTYPE_TILEMAP) tilemap_data = create_tilemap_data(&layer, &width, &height, &offset_x, &offset_y);
-        layer.sox -= offset_x;
-        layer.soy -= offset_y;
         writer_make_offset(stream, 32);
         writer_write<int32_t>(stream, layer.type);
-        writer_write<float>(stream, layer.smx);
-        writer_write<float>(stream, layer.smy);
-        writer_write<float>(stream, layer.sox);
-        writer_write<float>(stream, layer.soy);
-        writer_write<float>(stream, layer.scx);
-        writer_write<float>(stream, layer.scy);
-        layer.sox += offset_x;
-        layer.soy += offset_y;
+        writer_write<float>(stream, settings_layer->smx);
+        writer_write<float>(stream, settings_layer->smy);
+        writer_write<float>(stream, settings_layer->sox - offset_x);
+        writer_write<float>(stream, settings_layer->soy - offset_y);
+        writer_write<float>(stream, settings_layer->scx);
+        writer_write<float>(stream, settings_layer->scy);
 
         switch (layer.type) {
             case LAYERTYPE_TILEMAP:
@@ -1426,18 +1426,21 @@ void editor_run(SDL_Renderer* renderer) {
     if (curr_mode == EDITMODE_CAMBOUND) {
         SDL_SetRenderDrawColor(renderer, 176, 176, 176, 255);
         if (show_grid) draw_grid(renderer, 1, 1, 1, 1, 0, 0, 16, 16);
-        if (!cambounds.empty()) {
-            for (Rectangle rect : cambounds[curr_cambound]) {
-                rect = fix_rectangle(rect);
-                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 32);
-                float x1 = (rect.x1 - (camx - windoww / 64.f)) * 32.f;
-                float y1 = (rect.y1 - (camy - windowh / 64.f)) * 32.f;
-                float x2 = (rect.x2 - (camx - windoww / 64.f)) * 32.f;
-                float y2 = (rect.y2 - (camy - windowh / 64.f)) * 32.f;
-                SDL_FRect r = (SDL_FRect){ .x = x1, .y = y1, .w = x2 - x1, .h = y2 - y1 };
-                SDL_RenderFillRectF(renderer, &r);
-                SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-                SDL_RenderDrawRectF(renderer, &r);
+    }
+
+    if (!cambounds.empty()) {
+        for (Rectangle rect : cambounds[curr_cambound]) {
+            rect = fix_rectangle(rect);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 32);
+            float x1 = (rect.x1 - (camx - windoww / 64.f)) * 32.f;
+            float y1 = (rect.y1 - (camy - windowh / 64.f)) * 32.f;
+            float x2 = (rect.x2 - (camx - windoww / 64.f)) * 32.f;
+            float y2 = (rect.y2 - (camy - windowh / 64.f)) * 32.f;
+            SDL_FRect r = (SDL_FRect){ .x = x1, .y = y1, .w = x2 - x1, .h = y2 - y1 };
+            SDL_RenderFillRectF(renderer, &r);
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_RenderDrawRectF(renderer, &r);
+            if (curr_mode == EDITMODE_CAMBOUND) {
                 SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
                 r = { .x = x1 - 4, .y = y1 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
                 r = { .x = x2 - 4, .y = y1 - 4, .w = 8, .h = 8 }; SDL_RenderFillRectF(renderer, &r);
